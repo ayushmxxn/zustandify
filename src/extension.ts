@@ -8,7 +8,7 @@ export function activate(context: vscode.ExtensionContext) {
     100
   );
   convertAllStatusBarItem.text = "$(zap) Convert States to Stores";
-  convertAllStatusBarItem.tooltip = "Convert State hooks to Zustand stores";
+  convertAllStatusBarItem.tooltip = "Convert useState hooks to Zustand stores";
   convertAllStatusBarItem.command = "zustandConverter.convertAll";
   convertAllStatusBarItem.show();
 
@@ -24,7 +24,8 @@ export function activate(context: vscode.ExtensionContext) {
       const document = editor.document;
       const text = document.getText();
 
-      const useStateRegex = /const\s+\[(\w+),\s*set(\w+)\]\s*=\s*useState/g;
+      const useStateRegex =
+        /const\s+\[(\w+),\s*set(\w+)\]\s*=\s*useState\s*\(([^)]*)\)/g;
       const matches = [...text.matchAll(useStateRegex)];
 
       if (matches.length === 0) {
@@ -35,59 +36,114 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       const workspaceEdit = new vscode.WorkspaceEdit();
-      const convertPromises = matches.map(async (match) => {
-        const stateName = match[1];
-        const capitalizedStateName =
-          stateName.charAt(0).toUpperCase() + stateName.slice(1);
+      const convertResults = await Promise.all(
+        matches.map(async (match) => {
+          const stateName = match[1];
+          const capitalizedStateName =
+            stateName.charAt(0).toUpperCase() + stateName.slice(1);
+          const initialValue = match[3] || "null";
 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
-          vscode.window.showErrorMessage("No workspace folder found");
-          return;
-        }
+          const workspaceFolders = vscode.workspace.workspaceFolders;
+          if (!workspaceFolders) {
+            vscode.window.showErrorMessage("No workspace folder found");
+            return null;
+          }
 
-        const projectRoot = workspaceFolders[0].uri.fsPath;
-        const storeFolderPath = await findOrCreateStoreFolder(projectRoot);
+          const projectRoot = workspaceFolders[0].uri.fsPath;
+          const storeFolderPath = await findOrCreateStoreFolder(projectRoot);
 
-        if (!storeFolderPath) {
-          vscode.window.showErrorMessage(
-            "Could not find or create store folder"
+          if (!storeFolderPath) {
+            vscode.window.showErrorMessage(
+              "Could not find or create store folder"
+            );
+            return null;
+          }
+
+          const isTypeScript = document.languageId.includes("typescript");
+          const fileExtension = isTypeScript ? ".ts" : ".js";
+
+          const storeFileName = `use${capitalizedStateName}Store${fileExtension}`;
+          const storeFilePath = path.join(storeFolderPath, storeFileName);
+
+          const storeContent = isTypeScript
+            ? generateTypeScriptStoreContent(
+                stateName,
+                capitalizedStateName,
+                initialValue
+              )
+            : generateJavaScriptStoreContent(
+                stateName,
+                capitalizedStateName,
+                initialValue
+              );
+
+          fs.writeFileSync(storeFilePath, storeContent);
+
+          return {
+            stateName,
+            capitalizedStateName,
+            storeFileName,
+            fileExtension,
+            initialValue,
+          };
+        })
+      );
+
+      let editedDocumentText = text;
+
+      // Add 'use client' at the top if not already present
+      if (!editedDocumentText.includes("'use client'")) {
+        editedDocumentText = `'use client';\n\n${editedDocumentText}`;
+      }
+
+      // Remove useState import
+      editedDocumentText = removeUseStateImport(editedDocumentText);
+
+      // Remove empty React import
+      editedDocumentText = removeEmptyReactImport(editedDocumentText);
+
+      // Add Zustand store imports
+      convertResults.forEach((result) => {
+        if (result) {
+          const importStatement = `import ${
+            result.stateName
+          }Store from './store/${result.storeFileName.replace(
+            result.fileExtension,
+            ""
+          )}';`;
+          editedDocumentText = addImportStatement(
+            editedDocumentText,
+            importStatement
           );
-          return;
         }
-
-        const isTypeScript = document.languageId.includes("typescript");
-        const fileExtension = isTypeScript ? ".ts" : ".js";
-
-        const storeFileName = `use${capitalizedStateName}Store${fileExtension}`;
-        const storeFilePath = path.join(storeFolderPath, storeFileName);
-
-        const storeContent = isTypeScript
-          ? generateTypeScriptStoreContent(stateName, capitalizedStateName)
-          : generateJavaScriptStoreContent(stateName, capitalizedStateName);
-
-        fs.writeFileSync(storeFilePath, storeContent);
-
-        const editedDocumentText = modifyDocumentContent(
-          text,
-          stateName,
-          capitalizedStateName,
-          storeFileName,
-          fileExtension
-        );
-
-        const fullDocumentRange = new vscode.Range(
-          new vscode.Position(0, 0),
-          document.lineAt(document.lineCount - 1).range.end
-        );
-        workspaceEdit.replace(
-          document.uri,
-          fullDocumentRange,
-          editedDocumentText
-        );
       });
 
-      await Promise.all(convertPromises);
+      // Replace useState hooks with Zustand store usage
+      convertResults.forEach((result) => {
+        if (result) {
+          const useStateRegex = new RegExp(
+            `const\\s+\\[${result.stateName},\\s*set${result.capitalizedStateName}\\]\\s*=\\s*useState\\s*\\([^)]*\\)`
+          );
+          editedDocumentText = editedDocumentText.replace(
+            useStateRegex,
+            `const { ${result.stateName}, set${result.capitalizedStateName} } = ${result.stateName}Store()`
+          );
+        }
+      });
+
+      // Remove empty lines
+      editedDocumentText = editedDocumentText.replace(/^\s*\n/gm, "").trim();
+
+      const fullDocumentRange = new vscode.Range(
+        new vscode.Position(0, 0),
+        document.lineAt(document.lineCount - 1).range.end
+      );
+      workspaceEdit.replace(
+        document.uri,
+        fullDocumentRange,
+        editedDocumentText
+      );
+
       await vscode.workspace.applyEdit(workspaceEdit);
 
       vscode.window.showInformationMessage(
@@ -97,42 +153,6 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(convertAllCommand, convertAllStatusBarItem);
-}
-
-function modifyDocumentContent(
-  documentText: string,
-  stateName: string,
-  capitalizedStateName: string,
-  storeFileName: string,
-  fileExtension: string
-): string {
-  // Ensure only one 'use client' directive
-  let modifiedText = documentText.replace(/^['"]use client['"];\s*\n?/gm, "");
-  modifiedText = `'use client';\n\n${modifiedText}`;
-
-  // Remove useState import
-  modifiedText = removeUseStateImport(modifiedText);
-
-  // Remove empty React import
-  modifiedText = removeEmptyReactImport(modifiedText);
-
-  // Add Zustand store import
-  const importStatement = `import ${stateName}Store from './store/${storeFileName.replace(
-    fileExtension,
-    ""
-  )}';`;
-  modifiedText = addImportStatement(modifiedText, importStatement);
-
-  // Replace useState hook with Zustand store usage
-  const useStateRegex = new RegExp(
-    `const\\s+\\[${stateName},\\s*set${capitalizedStateName}\\]\\s*=\\s*useState\\([^)]*\\)`
-  );
-  modifiedText = modifiedText.replace(
-    useStateRegex,
-    `const { ${stateName}, set${capitalizedStateName} } = ${stateName}Store()`
-  );
-
-  return modifiedText.replace(/^\s*\n/gm, "").trim();
 }
 
 function addImportStatement(documentText: string, newImport: string): string {
@@ -243,18 +263,22 @@ async function findOrCreateStoreFolder(
 
 function generateTypeScriptStoreContent(
   stateName: string,
-  capitalizedStateName: string
+  capitalizedStateName: string,
+  initialValue: string
 ): string {
   return `import { create } from "zustand";
 
+// Types
 interface ${capitalizedStateName}StoreState {
-    ${stateName}: any;
-    set${capitalizedStateName}: (new${capitalizedStateName}: any) => void;
+    ${stateName}: ${determineTypeFromInitialValue(initialValue)};
+    set${capitalizedStateName}: (new${capitalizedStateName}: ${determineTypeFromInitialValue(
+    initialValue
+  )}) => void;
 }
 
 const use${capitalizedStateName}Store = create<${capitalizedStateName}StoreState>((set) => ({
-    ${stateName}: null,
-    set${capitalizedStateName}: (new${capitalizedStateName}) => set({ ${stateName}: new${capitalizedStateName} }),
+    ${stateName}: ${initialValue}, // Initial Value
+    set${capitalizedStateName}: (new${capitalizedStateName}) => set({ ${stateName}: new${capitalizedStateName} }), // Updater
 }));
 
 export default use${capitalizedStateName}Store;`;
@@ -262,16 +286,33 @@ export default use${capitalizedStateName}Store;`;
 
 function generateJavaScriptStoreContent(
   stateName: string,
-  capitalizedStateName: string
+  capitalizedStateName: string,
+  initialValue: string
 ): string {
   return `import { create } from "zustand";
 
 const use${capitalizedStateName}Store = create((set) => ({
-    ${stateName}: null,
-    set${capitalizedStateName}: (new${capitalizedStateName}) => set({ ${stateName}: new${capitalizedStateName} }),
+    ${stateName}: ${initialValue}, // Initial Value
+    set${capitalizedStateName}: (new${capitalizedStateName}) => set({ ${stateName}: new${capitalizedStateName} }), // Updater
 }));
 
 export default use${capitalizedStateName}Store;`;
+}
+
+function determineTypeFromInitialValue(initialValue: string): string {
+  if (initialValue === "null") {
+    return "any";
+  }
+  if (initialValue === "true" || initialValue === "false") {
+    return "boolean";
+  }
+  if (!isNaN(Number(initialValue))) {
+    return "number";
+  }
+  if (initialValue.startsWith("'") || initialValue.startsWith('"')) {
+    return "string";
+  }
+  return "any";
 }
 
 export function deactivate() {}

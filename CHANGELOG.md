@@ -5,3 +5,7 @@ All notable changes to the "Zustandify" extension will be documented in this fil
 ## [Release] - 2025-1-26
 
 - Initial release of the Zustandify extension.
+
+## [Fix] - 2025-1-26
+
+- Fixed Consuming Context Issue.

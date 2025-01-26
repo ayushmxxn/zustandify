@@ -2,7 +2,7 @@
 
 A extension that helps you convert your states into Zustand stores with a single click.
 
-![CodePilot Demo](https://i.ibb.co/Br12pn3/Zustandify-Preview.png)
+![Zustandify Preview](https://i.ibb.co/Br12pn3/Zustandify-Preview.png)
 
 ## ⚙️ How It Works
 

@@ -1,6 +1,8 @@
-# Convert States to Zustand Stores With a Single Click
+# States to Zustand Stores
 
-A extension that helps you convert your states made with `useState` hook in your React/Next.js projects into Zustand stores with a single click.
+A extension that helps you convert your states into Zustand stores with a single click.
+
+![CodePilot Demo](https://i.ibb.co/Br12pn3/Zustandify-Preview.png)
 
 ## ⚙️ How It Works
 
